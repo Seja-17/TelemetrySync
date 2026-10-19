@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>TelemetrySync Dashboard</title>
+    <style>
+        body { font-family: Arial, sans-serif; max-width: 1000px; margin: 40px auto; padding: 0 16px; background: #f4f6f8; color: #222; }
+        h1 { margin-bottom: 4px; }
+        h2 { margin: 0 0 12px 0; font-size: 18px; }
+        .sub { color: #666; margin-bottom: 24px; }
+        .card { background: #fff; border-radius: 8px; padding: 16px; margin-bottom: 20px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+        input { padding: 8px; margin-right: 8px; border: 1px solid #ccc; border-radius: 4px; }
+        button { padding: 8px 14px; border: 0; border-radius: 4px; background: #0b57d0; color: #fff; cursor: pointer; }
+        button:hover { background: #0942a0; }
+        table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+        th, td { text-align: left; padding: 10px; border-bottom: 1px solid #eee; overflow-wrap: anywhere; }
+        .services th:nth-child(1) { width: 18%; }
+        .services th:nth-child(2) { width: 38%; }
+        .services th:nth-child(3) { width: 14%; }
+        .services th:nth-child(4) { width: 30%; }
+        .fleet th:nth-child(1) { width: 20%; }
+        .fleet th:nth-child(2) { width: 17%; }
+        .fleet th:nth-child(3) { width: 18%; }
+        .fleet th:nth-child(4) { width: 9%; }
+        .fleet th:nth-child(5) { width: 11%; }
+        .fleet th:nth-child(6) { width: 25%; }
+        .badge { padding: 3px 10px; border-radius: 12px; color: #fff; font-size: 13px; font-weight: bold; }
+        .UP, .HEALTHY { background: #1e9e4a; }
+        .DOWN, .ALERT { background: #d93025; }
+        .PENDING { background: #9aa0a6; }
+        .reason { font-size: 12px; color: #d93025; margin-top: 4px; }
+        #msg, #fleetMsg { color: #d93025; margin-top: 8px; min-height: 18px; }
+    </style>
+</head>
+<body>
+<h1>TelemetrySync</h1>
+<div class="sub">Service health and connected-fleet dashboard. Refreshes every 10 seconds.</div>
+
+<!-- ===== Service monitor ===== -->
+<div class="card">
+    <h2>Service monitor</h2>
+    <input id="name" placeholder="Service name">
+    <input id="url" placeholder="https://example.com" size="30">
+    <button onclick="addService()">Add</button>
+    <button onclick="pingAll()">Ping all now</button>
+    <div id="msg"></div>
+</div>
+
+<div class="card">
+    <table class="services">
+        <thead>
+        <tr><th>Name</th><th>URL</th><th>Status</th><th>Last checked</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+    </table>
+</div>
+
+<!-- ===== Fleet tracker ===== -->
+<div class="card">
+    <h2>Connected fleet</h2>
+    <button onclick="loadDemoFleet()">Load demo fleet</button>
+    <button id="fleetFilter" onclick="toggleFleetFilter()">Show alerts only</button>
+    <div id="fleetMsg"></div>
+</div>
+
+<div class="card">
+    <table class="fleet">
+        <thead>
+        <tr><th>VIN</th><th>Model</th><th>Location</th><th>Fuel %</th><th>Engine light</th><th>Status</th></tr>
+        </thead>
+        <tbody id="fleetRows"></tbody>
+    </table>
+</div>
+
+<script>
+    const API = '/api/services';
+    const FLEET_API = '/api/telemetry';
+    const LOW_FUEL = 15;
+    let showFleetAlertsOnly = false;
+
+    // Small helper: builds a <td> using textContent so data can never inject HTML.
+    function cell(text) {
+        const td = document.createElement('td');
+        td.textContent = text;
+        return td;
+    }
+
+    function badgeCell(label) {
+        const td = document.createElement('td');
+        const badge = document.createElement('span');
+        badge.className = 'badge ' + label;
+        badge.textContent = label;
+        td.appendChild(badge);
+        return td;
+    }
+
+    // ---------- Service monitor ----------
+    async function loadServices() {
+        try {
+            const res = await fetch(API);
+            const services = await res.json();
+            const tbody = document.getElementById('rows');
+            tbody.innerHTML = '';
+            services.forEach(s => {
+                const tr = document.createElement('tr');
+                tr.appendChild(cell(s.name));
+                tr.appendChild(cell(s.url));
+                tr.appendChild(badgeCell(s.status));
+                tr.appendChild(cell(s.lastChecked ? s.lastChecked.replace('T', ' ').substring(0, 19) : 'not checked yet'));
+                tbody.appendChild(tr);
+            });
+        } catch (e) {
+            document.getElementById('msg').textContent = 'Could not reach the server.';
+        }
+    }
+
+    async function addService() {
+        const name = document.getElementById('name').value.trim();
+        const url = document.getElementById('url').value.trim();
+        const msg = document.getElementById('msg');
+        if (!name || !url) { msg.textContent = 'Please enter both a name and a URL.'; return; }
+        msg.textContent = '';
+        await fetch(API, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, url })
+        });
+        document.getElementById('name').value = '';
+        document.getElementById('url').value = '';
+        loadServices();
+    }
+
+    async function pingAll() {
+        document.getElementById('msg').textContent = 'Checking all services...';
+        await fetch(API + '/ping-all', { method: 'POST' });
+        document.getElementById('msg').textContent = '';
+        loadServices();
+    }
+
+    // ---------- Fleet tracker ----------
+    async function loadFleet() {
+        try {
+            const res = await fetch(showFleetAlertsOnly ? FLEET_API + '/alerts' : FLEET_API);
+            if (!res.ok) throw new Error('Fleet request failed');
+            const vehicles = await res.json();
+            const tbody = document.getElementById('fleetRows');
+            tbody.innerHTML = '';
+            if (vehicles.length === 0) {
+                const tr = document.createElement('tr');
+                const td = cell(showFleetAlertsOnly ? 'No vehicles need attention.' : 'No vehicles registered yet.');
+                td.colSpan = 6;
+                tr.appendChild(td);
+                tbody.appendChild(tr);
+            }
+            vehicles.forEach(v => {
+                const reasons = [];
+                if (v.fuelLevel < LOW_FUEL) reasons.push('Low fuel');
+                if (v.engineLightOn) reasons.push('Engine light on');
+                const status = reasons.length > 0 ? 'ALERT' : 'HEALTHY';
+
+                const tr = document.createElement('tr');
+                tr.appendChild(cell(v.vin));
+                tr.appendChild(cell(v.modelName));
+                tr.appendChild(cell(v.latitude.toFixed(4) + ', ' + v.longitude.toFixed(4)));
+                tr.appendChild(cell(v.fuelLevel));
+                tr.appendChild(cell(v.engineLightOn ? 'ON' : 'off'));
+
+                const statusTd = badgeCell(status);
+                if (reasons.length > 0) {
+                    const reason = document.createElement('div');
+                    reason.className = 'reason';
+                    reason.textContent = reasons.join(', ');
+                    statusTd.appendChild(reason);
+                }
+                tr.appendChild(statusTd);
+                tbody.appendChild(tr);
+            });
+        } catch (e) {
+            document.getElementById('fleetMsg').textContent = 'Could not load fleet data.';
+        }
+    }
+
+    function toggleFleetFilter() {
+        showFleetAlertsOnly = !showFleetAlertsOnly;
+        document.getElementById('fleetFilter').textContent = showFleetAlertsOnly ? 'Show all vehicles' : 'Show alerts only';
+        loadFleet();
+    }
+
+    // Posts a few fake vehicles. Safe to click repeatedly: the VIN makes it an update.
+    async function loadDemoFleet() {
+        const demo = [
+            { vin: '1FTFW1E50PFA00001', modelName: 'F-150',          latitude: 42.3314, longitude: -83.0458,  fuelLevel: 72, engineLightOn: false },
+            { vin: '1FMTK4SX5PGA00002', modelName: 'Mustang Mach-E', latitude: 37.7749, longitude: -122.4194, fuelLevel: 9,  engineLightOn: false },
+            { vin: '1FMSK8DH2PGA00003', modelName: 'Explorer',       latitude: 41.8781, longitude: -87.6298,  fuelLevel: 55, engineLightOn: true  },
+            { vin: '1FMDE5BH7PLA00004', modelName: 'Bronco',         latitude: 36.1627, longitude: -86.7816,  fuelLevel: 88, engineLightOn: false }
+        ];
+        document.getElementById('fleetMsg').textContent = 'Loading demo fleet...';
+        try {
+            for (const v of demo) {
+                const res = await fetch(FLEET_API, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(v)
+                });
+                if (!res.ok) {
+                    const error = await res.json().catch(() => ({}));
+                    throw new Error(error.error || 'A demo vehicle was rejected');
+                }
+            }
+            document.getElementById('fleetMsg').textContent = 'Demo fleet loaded.';
+            loadFleet();
+        } catch (e) {
+            document.getElementById('fleetMsg').textContent = e.message || 'Could not load demo fleet.';
+        }
+    }
+
+    function loadAll() {
+        loadServices();
+        loadFleet();
+    }
+
+    loadAll();
+    setInterval(loadAll, 10000);
+</script>
+</body>
+</html>
